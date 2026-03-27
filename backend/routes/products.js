@@ -14,55 +14,7 @@ const generateProductId = () => {
     return result;
 };
 
-// POST create product - UPLOADS TO CLOUDINARY
-router.post('/', auth, upload.array('images', 10), async (req, res) => {
-    try {
-        console.log('📦 Creating product...');
-        const { title, price, old_price, description, category, stock_status, rating } = req.body;
-        
-        if (!title || !price || !description || !category) {
-            return res.status(400).json({ success: false, message: 'Missing required fields' });
-        }
-        
-        const product_id = generateProductId();
-        
-        // UPLOAD TO CLOUDINARY - PERMANENT STORAGE
-        const imageUrls = [];
-        if (req.files && req.files.length > 0) {
-            for (const file of req.files) {
-                try {
-                    const result = await uploadToCloudinary(file.buffer);
-                    imageUrls.push(result.secure_url);
-                    console.log('✅ Uploaded to Cloudinary:', result.secure_url);
-                } catch (uploadErr) {
-                    console.error('Cloudinary upload error:', uploadErr);
-                }
-            }
-        }
-        
-        // If no images uploaded, use placeholder
-        if (imageUrls.length === 0) {
-            imageUrls.push('https://placehold.co/400x300/FF6B00/white?text=KUKU+YETU');
-        }
-        
-        const result = await pool.query(
-            `INSERT INTO products (product_id, title, price, old_price, description, category, stock_status, rating, images) 
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-            [product_id, title, price, old_price || null, description, category, stock_status || 'available', rating || 4, imageUrls]
-        );
-        
-        res.status(201).json({
-            success: true,
-            message: 'Product created successfully',
-            product: result.rows[0]
-        });
-    } catch (err) {
-        console.error('Create product error:', err);
-        res.status(500).json({ success: false, message: 'Server error: ' + err.message });
-    }
-});
-
-// GET all products
+// ============== GET ALL PRODUCTS ==============
 router.get('/', async (req, res) => {
     try {
         const { category, search } = req.query;
@@ -104,7 +56,7 @@ router.get('/', async (req, res) => {
     }
 });
 
-// GET single product
+// ============== GET SINGLE PRODUCT ==============
 router.get('/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -132,33 +84,102 @@ router.get('/:id', async (req, res) => {
     }
 });
 
-// PUT update product
+// ============== CREATE PRODUCT (WITH CLOUDINARY UPLOAD) ==============
+router.post('/', auth, upload.array('images', 10), async (req, res) => {
+    try {
+        console.log('📦 Creating product...');
+        const { title, price, old_price, description, category, stock_status, rating } = req.body;
+        
+        // Validate required fields
+        if (!title || !price || !description || !category) {
+            return res.status(400).json({ success: false, message: 'Missing required fields' });
+        }
+        
+        const product_id = generateProductId();
+        
+        // UPLOAD TO CLOUDINARY - PERMANENT STORAGE
+        const imageUrls = [];
+        
+        if (req.files && req.files.length > 0) {
+            console.log(`📸 Uploading ${req.files.length} image(s) to Cloudinary...`);
+            
+            for (const file of req.files) {
+                try {
+                    const result = await uploadToCloudinary(file.buffer);
+                    imageUrls.push(result.secure_url);
+                    console.log('✅ Uploaded to Cloudinary:', result.secure_url);
+                } catch (uploadErr) {
+                    console.error('❌ Cloudinary upload error:', uploadErr.message);
+                }
+            }
+        } else {
+            console.log('⚠️ No images uploaded');
+        }
+        
+        // If no images uploaded, use placeholder
+        if (imageUrls.length === 0) {
+            imageUrls.push('https://placehold.co/400x300/FF6B00/white?text=KUKU+YETU');
+            console.log('📷 Using placeholder image');
+        }
+        
+        console.log(`💾 Saving product with ${imageUrls.length} image(s)`);
+        
+        const result = await pool.query(
+            `INSERT INTO products (product_id, title, price, old_price, description, category, stock_status, rating, images) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+            [product_id, title, price, old_price || null, description, category, stock_status || 'available', rating || 4, imageUrls]
+        );
+        
+        res.status(201).json({
+            success: true,
+            message: 'Product created successfully',
+            product: result.rows[0]
+        });
+    } catch (err) {
+        console.error('Create product error:', err);
+        res.status(500).json({ success: false, message: 'Server error: ' + err.message });
+    }
+});
+
+// ============== UPDATE PRODUCT ==============
 router.put('/:id', auth, upload.array('new_images', 10), async (req, res) => {
     try {
         const productId = parseInt(req.params.id);
-        const { title, price, old_price, description, category, stock_status, rating } = req.body;
+        const { title, price, old_price, description, category, stock_status, rating, images_to_remove } = req.body;
         
+        // Check if product exists
         const existing = await pool.query('SELECT * FROM products WHERE id = $1', [productId]);
         if (existing.rows.length === 0) {
             return res.status(404).json({ success: false, message: 'Product not found' });
         }
         
-        // Upload new images to Cloudinary
         let currentImages = existing.rows[0].images || [];
         if (typeof currentImages === 'string') currentImages = [currentImages];
         
+        // Handle image removal if requested
+        if (images_to_remove) {
+            try {
+                const toRemove = JSON.parse(images_to_remove);
+                currentImages = currentImages.filter(img => !toRemove.includes(img));
+                console.log(`🗑️ Removed ${toRemove.length} image(s)`);
+            } catch (e) {}
+        }
+        
+        // Upload new images to Cloudinary
         if (req.files && req.files.length > 0) {
+            console.log(`📸 Uploading ${req.files.length} new image(s) to Cloudinary...`);
             for (const file of req.files) {
                 try {
                     const result = await uploadToCloudinary(file.buffer);
                     currentImages.push(result.secure_url);
-                    console.log('✅ Uploaded new image to Cloudinary:', result.secure_url);
+                    console.log('✅ Uploaded to Cloudinary:', result.secure_url);
                 } catch (uploadErr) {
-                    console.error('Cloudinary upload error:', uploadErr);
+                    console.error('Cloudinary upload error:', uploadErr.message);
                 }
             }
         }
         
+        // Build update query
         const updates = [];
         const values = [];
         let paramCount = 1;
@@ -187,10 +208,15 @@ router.put('/:id', auth, upload.array('new_images', 10), async (req, res) => {
     }
 });
 
-// DELETE product
+// ============== DELETE PRODUCT ==============
 router.delete('/:id', auth, async (req, res) => {
     try {
         const productId = parseInt(req.params.id);
+        
+        // Get product images for potential cleanup
+        const product = await pool.query('SELECT images FROM products WHERE id = $1', [productId]);
+        
+        // Note: Cloudinary cleanup could be added here if needed
         
         await pool.query('DELETE FROM products WHERE id = $1', [productId]);
         
