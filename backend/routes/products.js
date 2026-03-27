@@ -2,12 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const auth = require('../middleware/auth');
-const { upload } = require('../config/cloudinary');
-
-// Make sure upload is defined
-if (!upload) {
-    console.error('❌ Upload middleware is undefined!');
-}
+const { upload, uploadToCloudinary } = require('../config/cloudinary');
 
 // Generate unique product ID
 const generateProductId = () => {
@@ -19,7 +14,7 @@ const generateProductId = () => {
     return result;
 };
 
-// POST create product - FIXED: remove the second auth parameter
+// POST create product - UPLOADS TO CLOUDINARY
 router.post('/', auth, upload.array('images', 10), async (req, res) => {
     try {
         console.log('📦 Creating product...');
@@ -31,8 +26,24 @@ router.post('/', auth, upload.array('images', 10), async (req, res) => {
         
         const product_id = generateProductId();
         
-        // For now, use placeholder images (skip Cloudinary upload)
-        const imageUrls = ['https://placehold.co/400x300/FF6B00/white?text=KUKU+YETU'];
+        // UPLOAD TO CLOUDINARY - PERMANENT STORAGE
+        const imageUrls = [];
+        if (req.files && req.files.length > 0) {
+            for (const file of req.files) {
+                try {
+                    const result = await uploadToCloudinary(file.buffer);
+                    imageUrls.push(result.secure_url);
+                    console.log('✅ Uploaded to Cloudinary:', result.secure_url);
+                } catch (uploadErr) {
+                    console.error('Cloudinary upload error:', uploadErr);
+                }
+            }
+        }
+        
+        // If no images uploaded, use placeholder
+        if (imageUrls.length === 0) {
+            imageUrls.push('https://placehold.co/400x300/FF6B00/white?text=KUKU+YETU');
+        }
         
         const result = await pool.query(
             `INSERT INTO products (product_id, title, price, old_price, description, category, stock_status, rating, images) 
@@ -132,6 +143,22 @@ router.put('/:id', auth, upload.array('new_images', 10), async (req, res) => {
             return res.status(404).json({ success: false, message: 'Product not found' });
         }
         
+        // Upload new images to Cloudinary
+        let currentImages = existing.rows[0].images || [];
+        if (typeof currentImages === 'string') currentImages = [currentImages];
+        
+        if (req.files && req.files.length > 0) {
+            for (const file of req.files) {
+                try {
+                    const result = await uploadToCloudinary(file.buffer);
+                    currentImages.push(result.secure_url);
+                    console.log('✅ Uploaded new image to Cloudinary:', result.secure_url);
+                } catch (uploadErr) {
+                    console.error('Cloudinary upload error:', uploadErr);
+                }
+            }
+        }
+        
         const updates = [];
         const values = [];
         let paramCount = 1;
@@ -143,10 +170,7 @@ router.put('/:id', auth, upload.array('new_images', 10), async (req, res) => {
         if (category) { updates.push(`category = $${paramCount}`); values.push(category); paramCount++; }
         if (stock_status) { updates.push(`stock_status = $${paramCount}`); values.push(stock_status); paramCount++; }
         if (rating) { updates.push(`rating = $${paramCount}`); values.push(rating); paramCount++; }
-        
-        if (updates.length === 0) {
-            return res.status(400).json({ success: false, message: 'No fields to update' });
-        }
+        updates.push(`images = $${paramCount}`); values.push(currentImages); paramCount++;
         
         values.push(productId);
         const query = `UPDATE products SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING *`;
