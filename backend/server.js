@@ -60,7 +60,7 @@ app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/dashboard', require('./routes/dashboard'));
 
 // User routes
-app.use('/api/users', require('./routes/users'));
+app.use('/api/user', require('./routes/user'));
 
 // ============== ROOT ROUTE ==============
 app.get('/', (req, res) => {
