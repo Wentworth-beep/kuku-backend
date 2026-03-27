@@ -8,12 +8,16 @@ cloudinary.config({
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-console.log('☁️ Cloudinary configured');
+console.log('☁️ Cloudinary configured:', !!process.env.CLOUDINARY_CLOUD_NAME);
 
+// Multer setup for memory storage
 const storage = multer.memoryStorage();
-const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
+const upload = multer({ 
+    storage: storage, 
+    limits: { fileSize: 5 * 1024 * 1024 } // 5MB
+});
 
-// Upload to Cloudinary function
+// Upload buffer to Cloudinary
 const uploadToCloudinary = (buffer, options = {}) => {
     return new Promise((resolve, reject) => {
         const uploadStream = cloudinary.uploader.upload_stream(
