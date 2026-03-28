@@ -1,3 +1,13 @@
+// At the very top of your products.js route file
+console.log('🔥 PRODUCTS ROUTE LOADED with Cloudinary support!');
+
+// In your POST route, right at the beginning:
+router.post('/', auth, upload.array('images', 10), async (req, res) => {
+    console.log('🔥🔥🔥 CREATE PRODUCT ROUTE IS BEING CALLED! 🔥🔥🔥');
+    console.log('Files received:', req.files ? req.files.length : 0);
+    // ... rest of code
+
+
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
