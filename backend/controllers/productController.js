@@ -2,6 +2,7 @@ const Product = require('../models/Product');
 const pool = require('../config/database');
 const fs = require('fs');
 const path = require('path');
+const { uploadToCloudinary } = require('../config/cloudinary');
 
 // Generate unique product ID
 const generateProductId = () => {
@@ -13,6 +14,17 @@ const generateProductId = () => {
   return result;
 };
 
+// Helper function to parse images
+const parseImages = (images) => {
+  if (!images) return [];
+  if (Array.isArray(images)) return images;
+  try {
+    return JSON.parse(images);
+  } catch (e) {
+    return [images];
+  }
+};
+
 // @desc    Get all products
 // @route   GET /api/products
 // @access  Public
@@ -21,11 +33,8 @@ const getProducts = async (req, res) => {
     console.log('📦 Getting all products');
     const products = await Product.findAll();
     
-    // Ensure images are properly formatted
     const formattedProducts = products.map(product => {
-      if (product.images && !Array.isArray(product.images)) {
-        product.images = [product.images];
-      }
+      product.images = parseImages(product.images);
       return product;
     });
     
@@ -50,14 +59,12 @@ const getProductById = async (req, res) => {
   try {
     const { id } = req.params;
     
-    // Clean the ID (remove anything after colon)
     let cleanId = id;
     if (id.includes(':')) {
       cleanId = id.split(':')[0];
       console.log(`🔧 Cleaned product ID from ${id} to ${cleanId}`);
     }
     
-    // Convert to number
     const productId = parseInt(cleanId);
     if (isNaN(productId)) {
       return res.status(400).json({ 
@@ -75,10 +82,7 @@ const getProductById = async (req, res) => {
       });
     }
 
-    // Ensure images is an array
-    if (product.images && !Array.isArray(product.images)) {
-      product.images = [product.images];
-    }
+    product.images = parseImages(product.images);
 
     res.json({
       success: true,
@@ -107,10 +111,7 @@ const getProductByCode = async (req, res) => {
       });
     }
 
-    // Ensure images is an array
-    if (product.images && !Array.isArray(product.images)) {
-      product.images = [product.images];
-    }
+    product.images = parseImages(product.images);
 
     res.json({
       success: true,
@@ -132,11 +133,8 @@ const getProductsByCategory = async (req, res) => {
   try {
     const products = await Product.findByCategory(req.params.category);
     
-    // Ensure images are properly formatted
     const formattedProducts = products.map(product => {
-      if (product.images && !Array.isArray(product.images)) {
-        product.images = [product.images];
-      }
+      product.images = parseImages(product.images);
       return product;
     });
     
@@ -171,11 +169,8 @@ const searchProducts = async (req, res) => {
 
     const products = await Product.search(q);
     
-    // Ensure images are properly formatted
     const formattedProducts = products.map(product => {
-      if (product.images && !Array.isArray(product.images)) {
-        product.images = [product.images];
-      }
+      product.images = parseImages(product.images);
       return product;
     });
     
@@ -203,7 +198,6 @@ const createProduct = async (req, res) => {
       category, stock_status, rating
     } = req.body;
 
-    // Validate required fields
     if (!title || !price || !description || !category || !rating) {
       return res.status(400).json({ 
         success: false,
@@ -211,27 +205,46 @@ const createProduct = async (req, res) => {
       });
     }
 
-    // Generate unique product ID
     const product_id = generateProductId();
 
-    // Process images - ensure they're stored as array with /uploads/ prefix
-    const images = req.files ? req.files.map(file => `/uploads/${file.filename}`) : [];
+    // ✅ UPLOAD IMAGES TO CLOUDINARY
+    let cloudinaryUrls = [];
+    if (req.files && req.files.length > 0) {
+      console.log(`📤 Uploading ${req.files.length} images to Cloudinary...`);
+      
+      for (const file of req.files) {
+        try {
+          const result = await uploadToCloudinary(file.buffer, {
+            public_id: `${product_id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
+          });
+          cloudinaryUrls.push(result.secure_url);
+          console.log(`☁️ Uploaded: ${result.secure_url}`);
+        } catch (uploadError) {
+          console.error('❌ Cloudinary upload error:', uploadError.message);
+          // Continue with other images
+        }
+      }
+    }
 
     const product = await Product.create({
       product_id,
       title,
-      price,
-      old_price: old_price || null,
+      price: parseFloat(price),
+      old_price: old_price ? parseFloat(old_price) : null,
       description,
       category,
       stock_status: stock_status || 'available',
-      rating,
-      images
+      rating: parseFloat(rating),
+      images: JSON.stringify(cloudinaryUrls)  // Store Cloudinary URLs
     });
+
+    product.images = cloudinaryUrls;
+
+    console.log(`✅ Product created with ${cloudinaryUrls.length} Cloudinary images`);
 
     res.status(201).json({
       success: true,
-      message: 'Product created successfully',
+      message: 'Product added! Images stored in Cloudinary ☁️',
       product
     });
   } catch (err) {
@@ -251,16 +264,48 @@ const updateProduct = async (req, res) => {
     const productId = req.params.id;
     const {
       title, price, old_price, description,
-      category, stock_status, rating
+      category, stock_status, rating,
+      images_to_remove
     } = req.body;
 
-    // Check if product exists
     const existingProduct = await Product.findById(productId);
     if (!existingProduct) {
       return res.status(404).json({ 
         success: false,
         message: 'Product not found' 
       });
+    }
+
+    let currentImages = parseImages(existingProduct.images);
+    
+    // Handle image removal
+    if (images_to_remove) {
+      let toRemove = [];
+      try {
+        toRemove = JSON.parse(images_to_remove);
+      } catch (e) {
+        toRemove = [images_to_remove];
+      }
+      
+      currentImages = currentImages.filter(img => !toRemove.includes(img));
+      console.log(`🗑️ Removed ${toRemove.length} images`);
+    }
+
+    // ✅ UPLOAD NEW IMAGES TO CLOUDINARY
+    if (req.files && req.files.length > 0) {
+      console.log(`📤 Uploading ${req.files.length} new images to Cloudinary...`);
+      
+      for (const file of req.files) {
+        try {
+          const result = await uploadToCloudinary(file.buffer, {
+            public_id: `${existingProduct.product_id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
+          });
+          currentImages.push(result.secure_url);
+          console.log(`☁️ Uploaded: ${result.secure_url}`);
+        } catch (uploadError) {
+          console.error('❌ Cloudinary upload error:', uploadError.message);
+        }
+      }
     }
 
     // Build update query
@@ -274,14 +319,14 @@ const updateProduct = async (req, res) => {
       values.push(title);
       paramCount++;
     }
-    if (price) {
+    if (price !== undefined) {
       updates.push(`price = $${paramCount}`);
-      values.push(price);
+      values.push(parseFloat(price));
       paramCount++;
     }
     if (old_price !== undefined) {
       updates.push(`old_price = $${paramCount}`);
-      values.push(old_price);
+      values.push(old_price ? parseFloat(old_price) : null);
       paramCount++;
     }
     if (description) {
@@ -301,20 +346,14 @@ const updateProduct = async (req, res) => {
     }
     if (rating) {
       updates.push(`rating = $${paramCount}`);
-      values.push(rating);
+      values.push(parseFloat(rating));
       paramCount++;
     }
 
-    // Handle new images if uploaded
-    if (req.files && req.files.length > 0) {
-      const newImages = req.files.map(file => `/uploads/${file.filename}`);
-      const existingImages = existingProduct.images || [];
-      const allImages = [...existingImages, ...newImages];
-      
-      updates.push(`images = $${paramCount}`);
-      values.push(allImages);
-      paramCount++;
-    }
+    // Update images if changed
+    updates.push(`images = $${paramCount}`);
+    values.push(JSON.stringify(currentImages));
+    paramCount++;
 
     if (updates.length === 0) {
       return res.status(400).json({ 
@@ -325,14 +364,19 @@ const updateProduct = async (req, res) => {
 
     updateQuery += updates.join(', ');
     updateQuery += ` WHERE id = $${paramCount} RETURNING *`;
-    values.push(productId);
+    values.push(parseInt(productId));
 
     const result = await pool.query(updateQuery, values);
 
+    const updatedProduct = result.rows[0];
+    updatedProduct.images = parseImages(updatedProduct.images);
+
+    console.log(`✅ Product updated with ${updatedProduct.images.length} Cloudinary images`);
+
     res.json({
       success: true,
-      message: 'Product updated successfully',
-      product: result.rows[0]
+      message: 'Product updated! Images on Cloudinary ☁️',
+      product: updatedProduct
     });
   } catch (err) {
     console.error('❌ Update product error:', err.message);
@@ -350,7 +394,6 @@ const deleteProduct = async (req, res) => {
   try {
     const productId = req.params.id;
 
-    // Check if product exists
     const product = await Product.findById(productId);
     if (!product) {
       return res.status(404).json({ 
@@ -359,7 +402,7 @@ const deleteProduct = async (req, res) => {
       });
     }
 
-    // Delete any favorites that reference this product
+    // Delete favorites reference
     try {
       const tableCheck = await pool.query(`
         SELECT EXISTS (
@@ -376,22 +419,10 @@ const deleteProduct = async (req, res) => {
       console.log('⚠️ Favorites table error:', favError.message);
     }
 
-    // Delete associated images from filesystem
-    if (product.images && product.images.length > 0) {
-      product.images.forEach(imagePath => {
-        try {
-          const fullPath = path.join(__dirname, '..', imagePath);
-          if (fs.existsSync(fullPath)) {
-            fs.unlinkSync(fullPath);
-            console.log(`✅ Deleted image: ${fullPath}`);
-          }
-        } catch (fileError) {
-          console.error('Error deleting image file:', fileError.message);
-        }
-      });
-    }
+    // ✅ Note: Cloudinary images are NOT automatically deleted
+    // They remain in Cloudinary. To delete them, you'd need to call cloudinary.uploader.destroy()
+    // This is optional - images will just be orphaned in Cloudinary
 
-    // Delete from database
     await pool.query('DELETE FROM products WHERE id = $1', [productId]);
 
     res.json({
@@ -435,11 +466,8 @@ const getFeaturedProducts = async (req, res) => {
     
     const result = await pool.query(query);
     
-    // Ensure images are properly formatted
     const products = result.rows.map(product => {
-      if (product.images && !Array.isArray(product.images)) {
-        product.images = [product.images];
-      }
+      product.images = parseImages(product.images);
       return product;
     });
 
@@ -469,11 +497,8 @@ const getProductsByPriceRange = async (req, res) => {
       [min || 0, max || 999999]
     );
 
-    // Ensure images are properly formatted
     const products = result.rows.map(product => {
-      if (product.images && !Array.isArray(product.images)) {
-        product.images = [product.images];
-      }
+      product.images = parseImages(product.images);
       return product;
     });
 
@@ -483,7 +508,7 @@ const getProductsByPriceRange = async (req, res) => {
       products
     });
   } catch (err) {
-    console.error(' Get products by price range error:', err.message);
+    console.error('Get products by price range error:', err.message);
     res.status(500).json({ 
       success: false,
       message: 'Server error: ' + err.message
@@ -511,13 +536,16 @@ const updateProductStock = async (req, res) => {
       });
     }
 
+    const product = result.rows[0];
+    product.images = parseImages(product.images);
+
     res.json({
       success: true,
       message: 'Stock status updated successfully',
-      product: result.rows[0]
+      product
     });
   } catch (err) {
-    console.error(' Update product stock error:', err.message);
+    console.error('Update product stock error:', err.message);
     res.status(500).json({ 
       success: false,
       message: 'Server error: ' + err.message
