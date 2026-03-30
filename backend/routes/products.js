@@ -84,11 +84,12 @@ router.get('/:id', async (req, res) => {
     }
 });
 
-// ============== CREATE PRODUCT ==============
+// ============== CREATE PRODUCT - SINGLE ROUTE ONLY ==============
 router.post('/', auth, upload.array('images', 10), async (req, res) => {
     try {
-        console.log('Creating product...');
-        console.log('Files received:', req.files ? req.files.length : 0);
+        console.log('========================================');
+        console.log('CREATE PRODUCT - Single request received');
+        console.log('Files count:', req.files ? req.files.length : 0);
         
         const { title, price, old_price, description, category, stock_status, rating } = req.body;
         
@@ -99,13 +100,12 @@ router.post('/', auth, upload.array('images', 10), async (req, res) => {
         
         const product_id = generateProductId();
         
-        // Upload all images to Cloudinary and collect URLs
+        // Upload all images to Cloudinary - collect ALL images for ONE product
         const imageUrls = [];
         
         if (req.files && req.files.length > 0) {
-            console.log('Uploading ' + req.files.length + ' images to Cloudinary...');
+            console.log('Uploading', req.files.length, 'images to Cloudinary for ONE product');
             
-            // Use for...of loop to upload all images
             for (const file of req.files) {
                 try {
                     const result = await uploadToCloudinary(file.buffer);
@@ -123,9 +123,9 @@ router.post('/', auth, upload.array('images', 10), async (req, res) => {
             console.log('Using placeholder image');
         }
         
-        console.log('Total images to store:', imageUrls.length);
+        console.log('Total images for this product:', imageUrls.length);
         
-        // Create ONE product with ALL images
+        // Create ONE product with ALL images in the images array
         const result = await pool.query(
             `INSERT INTO products (product_id, title, price, old_price, description, category, stock_status, rating, images) 
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
@@ -133,7 +133,8 @@ router.post('/', auth, upload.array('images', 10), async (req, res) => {
         );
         
         console.log('Product created with ID:', result.rows[0].id);
-        console.log('Images stored:', result.rows[0].images);
+        console.log('Images stored count:', result.rows[0].images.length);
+        console.log('========================================');
         
         res.status(201).json({
             success: true,
@@ -166,7 +167,7 @@ router.put('/:id', auth, upload.array('images', 10), async (req, res) => {
             try {
                 const toRemove = JSON.parse(images_to_remove);
                 currentImages = currentImages.filter(img => !toRemove.includes(img));
-                console.log('Removed ' + toRemove.length + ' images');
+                console.log('Removed', toRemove.length, 'images');
             } catch (e) {
                 console.error('Error parsing images_to_remove:', e);
             }
@@ -174,7 +175,7 @@ router.put('/:id', auth, upload.array('images', 10), async (req, res) => {
         
         // Upload new images
         if (req.files && req.files.length > 0) {
-            console.log('Uploading ' + req.files.length + ' new images...');
+            console.log('Uploading', req.files.length, 'new images');
             for (const file of req.files) {
                 try {
                     const result = await uploadToCloudinary(file.buffer);
