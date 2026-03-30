@@ -84,23 +84,13 @@ router.get('/:id', async (req, res) => {
     }
 });
 
-// ============== CREATE PRODUCT (WITH CLOUDINARY UPLOAD) ==============
+// ============== CREATE PRODUCT ==============
 router.post('/', auth, upload.array('images', 10), async (req, res) => {
     try {
         console.log('Creating product...');
-        console.log('Has files:', req.files ? 'YES' : 'NO');
-        console.log('Files count:', req.files ? req.files.length : 0);
-        
-        if (req.files && req.files.length > 0) {
-            console.log('First file:', {
-                name: req.files[0].originalname,
-                size: req.files[0].size,
-                mimetype: req.files[0].mimetype
-            });
-        }
+        console.log('Files received:', req.files ? req.files.length : 0);
         
         const { title, price, old_price, description, category, stock_status, rating } = req.body;
-        console.log('Form data:', { title, price, category });
         
         // Validate required fields
         if (!title || !price || !description || !category) {
@@ -109,41 +99,41 @@ router.post('/', auth, upload.array('images', 10), async (req, res) => {
         
         const product_id = generateProductId();
         
-        // Upload to Cloudinary
+        // Upload all images to Cloudinary and collect URLs
         const imageUrls = [];
         
         if (req.files && req.files.length > 0) {
-            console.log('Uploading ' + req.files.length + ' image(s) to Cloudinary...');
+            console.log('Uploading ' + req.files.length + ' images to Cloudinary...');
             
+            // Use for...of loop to upload all images
             for (const file of req.files) {
                 try {
                     const result = await uploadToCloudinary(file.buffer);
                     imageUrls.push(result.secure_url);
-                    console.log('Uploaded to Cloudinary:', result.secure_url);
+                    console.log('Uploaded:', result.secure_url);
                 } catch (uploadErr) {
                     console.error('Cloudinary upload error:', uploadErr.message);
                 }
             }
-        } else {
-            console.log('No images uploaded - req.files is empty');
-            console.log('req.body keys:', Object.keys(req.body));
         }
         
+        // Add placeholder if no images
         if (imageUrls.length === 0) {
             imageUrls.push('https://placehold.co/400x300/FF6B00/white?text=KUKU+YETU');
             console.log('Using placeholder image');
         }
         
-        console.log('Final imageUrls to store:', imageUrls);
+        console.log('Total images to store:', imageUrls.length);
         
+        // Create ONE product with ALL images
         const result = await pool.query(
             `INSERT INTO products (product_id, title, price, old_price, description, category, stock_status, rating, images) 
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
             [product_id, title, price, old_price || null, description, category, stock_status || 'available', rating || 4, imageUrls]
         );
         
-        console.log('Product created. ID:', result.rows[0].id);
-        console.log('Stored images:', result.rows[0].images);
+        console.log('Product created with ID:', result.rows[0].id);
+        console.log('Images stored:', result.rows[0].images);
         
         res.status(201).json({
             success: true,
@@ -176,20 +166,20 @@ router.put('/:id', auth, upload.array('images', 10), async (req, res) => {
             try {
                 const toRemove = JSON.parse(images_to_remove);
                 currentImages = currentImages.filter(img => !toRemove.includes(img));
-                console.log('Removed ' + toRemove.length + ' image(s)');
+                console.log('Removed ' + toRemove.length + ' images');
             } catch (e) {
                 console.error('Error parsing images_to_remove:', e);
             }
         }
         
-        // Upload new images to Cloudinary
+        // Upload new images
         if (req.files && req.files.length > 0) {
-            console.log('Uploading ' + req.files.length + ' new image(s) to Cloudinary...');
+            console.log('Uploading ' + req.files.length + ' new images...');
             for (const file of req.files) {
                 try {
                     const result = await uploadToCloudinary(file.buffer);
                     currentImages.push(result.secure_url);
-                    console.log('Uploaded to Cloudinary:', result.secure_url);
+                    console.log('Uploaded:', result.secure_url);
                 } catch (uploadErr) {
                     console.error('Cloudinary upload error:', uploadErr.message);
                 }
@@ -229,11 +219,6 @@ router.put('/:id', auth, upload.array('images', 10), async (req, res) => {
 router.delete('/:id', auth, async (req, res) => {
     try {
         const productId = parseInt(req.params.id);
-        
-        // Get product images for potential cleanup
-        const product = await pool.query('SELECT images FROM products WHERE id = $1', [productId]);
-        
-        // Note: Cloudinary cleanup could be added here if needed
         
         await pool.query('DELETE FROM products WHERE id = $1', [productId]);
         
