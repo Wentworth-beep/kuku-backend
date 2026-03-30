@@ -4,7 +4,6 @@ const pool = require('../config/database');
 const auth = require('../middleware/auth');
 const { upload, uploadToCloudinary } = require('../config/cloudinary');
 
-// Generate unique product ID
 const generateProductId = () => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     let result = '';
@@ -14,7 +13,7 @@ const generateProductId = () => {
     return result;
 };
 
-// ============== GET ALL PRODUCTS ==============
+// GET ALL PRODUCTS
 router.get('/', async (req, res) => {
     try {
         const { category, search } = req.query;
@@ -35,7 +34,6 @@ router.get('/', async (req, res) => {
         }
 
         query += ' ORDER BY created_at DESC';
-        
         const products = await pool.query(query, params);
         
         const formattedProducts = products.rows.map(product => {
@@ -45,38 +43,28 @@ router.get('/', async (req, res) => {
             return product;
         });
         
-        res.json({
-            success: true,
-            count: formattedProducts.length,
-            products: formattedProducts
-        });
+        res.json({ success: true, count: formattedProducts.length, products: formattedProducts });
     } catch (err) {
         console.error('Get products error:', err);
         res.status(500).json({ success: false, message: 'Server error' });
     }
 });
 
-// ============== GET SINGLE PRODUCT ==============
+// GET SINGLE PRODUCT
 router.get('/:id', async (req, res) => {
     try {
-        const { id } = req.params;
-        const productId = parseInt(id);
-        
+        const productId = parseInt(req.params.id);
         if (isNaN(productId)) {
             return res.status(400).json({ success: false, message: 'Invalid product ID' });
         }
-        
         const result = await pool.query('SELECT * FROM products WHERE id = $1', [productId]);
-        
         if (result.rows.length === 0) {
             return res.status(404).json({ success: false, message: 'Product not found' });
         }
-        
         const product = result.rows[0];
         if (product.images && !Array.isArray(product.images)) {
             product.images = [product.images];
         }
-        
         res.json({ success: true, product });
     } catch (err) {
         console.error('Get product error:', err);
@@ -84,28 +72,24 @@ router.get('/:id', async (req, res) => {
     }
 });
 
-// ============== CREATE PRODUCT - SINGLE ROUTE ONLY ==============
+// CREATE PRODUCT - SINGLE ROUTE ONLY
 router.post('/', auth, upload.array('images', 10), async (req, res) => {
     try {
         console.log('========================================');
-        console.log('CREATE PRODUCT - Single request received');
-        console.log('Files count:', req.files ? req.files.length : 0);
+        console.log('CREATE PRODUCT - Single request');
+        console.log('Files received:', req.files ? req.files.length : 0);
         
         const { title, price, old_price, description, category, stock_status, rating } = req.body;
         
-        // Validate required fields
         if (!title || !price || !description || !category) {
             return res.status(400).json({ success: false, message: 'Missing required fields' });
         }
         
         const product_id = generateProductId();
-        
-        // Upload all images to Cloudinary - collect ALL images for ONE product
         const imageUrls = [];
         
         if (req.files && req.files.length > 0) {
-            console.log('Uploading', req.files.length, 'images to Cloudinary for ONE product');
-            
+            console.log('Uploading', req.files.length, 'images to Cloudinary');
             for (const file of req.files) {
                 try {
                     const result = await uploadToCloudinary(file.buffer);
@@ -117,15 +101,12 @@ router.post('/', auth, upload.array('images', 10), async (req, res) => {
             }
         }
         
-        // Add placeholder if no images
         if (imageUrls.length === 0) {
             imageUrls.push('https://placehold.co/400x300/FF6B00/white?text=KUKU+YETU');
-            console.log('Using placeholder image');
         }
         
-        console.log('Total images for this product:', imageUrls.length);
+        console.log('Total images for ONE product:', imageUrls.length);
         
-        // Create ONE product with ALL images in the images array
         const result = await pool.query(
             `INSERT INTO products (product_id, title, price, old_price, description, category, stock_status, rating, images) 
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
@@ -133,7 +114,6 @@ router.post('/', auth, upload.array('images', 10), async (req, res) => {
         );
         
         console.log('Product created with ID:', result.rows[0].id);
-        console.log('Images stored count:', result.rows[0].images.length);
         console.log('========================================');
         
         res.status(201).json({
@@ -147,13 +127,12 @@ router.post('/', auth, upload.array('images', 10), async (req, res) => {
     }
 });
 
-// ============== UPDATE PRODUCT ==============
+// UPDATE PRODUCT
 router.put('/:id', auth, upload.array('images', 10), async (req, res) => {
     try {
         const productId = parseInt(req.params.id);
         const { title, price, old_price, description, category, stock_status, rating, images_to_remove } = req.body;
         
-        // Check if product exists
         const existing = await pool.query('SELECT * FROM products WHERE id = $1', [productId]);
         if (existing.rows.length === 0) {
             return res.status(404).json({ success: false, message: 'Product not found' });
@@ -162,18 +141,14 @@ router.put('/:id', auth, upload.array('images', 10), async (req, res) => {
         let currentImages = existing.rows[0].images || [];
         if (typeof currentImages === 'string') currentImages = [currentImages];
         
-        // Handle image removal if requested
         if (images_to_remove) {
             try {
                 const toRemove = JSON.parse(images_to_remove);
                 currentImages = currentImages.filter(img => !toRemove.includes(img));
                 console.log('Removed', toRemove.length, 'images');
-            } catch (e) {
-                console.error('Error parsing images_to_remove:', e);
-            }
+            } catch (e) {}
         }
         
-        // Upload new images
         if (req.files && req.files.length > 0) {
             console.log('Uploading', req.files.length, 'new images');
             for (const file of req.files) {
@@ -187,7 +162,6 @@ router.put('/:id', auth, upload.array('images', 10), async (req, res) => {
             }
         }
         
-        // Build update query
         const updates = [];
         const values = [];
         let paramCount = 1;
@@ -205,24 +179,18 @@ router.put('/:id', auth, upload.array('images', 10), async (req, res) => {
         const query = `UPDATE products SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING *`;
         const result = await pool.query(query, values);
         
-        res.json({
-            success: true,
-            message: 'Product updated successfully',
-            product: result.rows[0]
-        });
+        res.json({ success: true, message: 'Product updated successfully', product: result.rows[0] });
     } catch (err) {
         console.error('Update product error:', err);
         res.status(500).json({ success: false, message: 'Server error: ' + err.message });
     }
 });
 
-// ============== DELETE PRODUCT ==============
+// DELETE PRODUCT
 router.delete('/:id', auth, async (req, res) => {
     try {
         const productId = parseInt(req.params.id);
-        
         await pool.query('DELETE FROM products WHERE id = $1', [productId]);
-        
         res.json({ success: true, message: 'Product deleted successfully' });
     } catch (err) {
         console.error('Delete product error:', err);
