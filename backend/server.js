@@ -20,7 +20,7 @@ const corsOptions = {
     "http://localhost:3000",
     "https://kuku-backend-ntr4.onrender.com",
     "https://kukuyetu.netlify.app",
-    "https://kuku-frontend-ten.vercel.app"
+    "https://kukuyetu.vercel.app/"
   ],
   credentials: true,
   optionsSuccessStatus: 200
