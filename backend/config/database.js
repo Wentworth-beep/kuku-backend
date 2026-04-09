@@ -6,63 +6,67 @@ let pool;
 try {
   // Check if we're in production (Render) or development
   if (process.env.NODE_ENV === 'production') {
-    // Production - use Neon database connection string
-    console.log('🔧 Connecting to Neon production database...');
+    console.log('Connecting to Neon production database...');
     
     if (!process.env.DATABASE_URL) {
       throw new Error('DATABASE_URL environment variable is not set');
     }
     
-    // Ensure SSL is properly configured for Neon
+    // Fix SSL mode for Neon - use verify-full
+    let connectionString = process.env.DATABASE_URL;
+    
+    // Add sslmode=verify-full if not present
+    if (!connectionString.includes('sslmode')) {
+      connectionString += '?sslmode=require';
+    }
+    
     pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: {
-        rejectUnauthorized: false // Required for Neon/Render - accepts self-signed certificates
-      },
-      // Add connection timeout and retry logic
-      connectionTimeoutMillis: 10000,
+      connectionString: connectionString,
+      connectionTimeoutMillis: 30000,  // Increase timeout to 30 seconds
       idleTimeoutMillis: 30000,
+      max: 20
     });
   } else {
     // Development - use local socket
-    console.log('🔧 Connecting to local development database...');
+    console.log('Connecting to local development database...');
     pool = new Pool({
       host: '/var/run/postgresql',
       database: 'kukuyetu',
       user: 'the-hype',
+      connectionTimeoutMillis: 10000
     });
   }
 
-  console.log('✅ Database pool created');
+  console.log('Database pool created');
 
   // Test the connection
   pool.connect((err, client, release) => {
     if (err) {
-      console.error('❌ Database connection error:', err.message);
+      console.error('Database connection error:', err.message);
       console.error('Please check:');
       console.error('1. DATABASE_URL is correct in your environment variables');
-      console.error('2. Neon database is accessible (allowlist Render IP if needed)');
-      console.error('3. SSL settings are correct');
+      console.error('2. Neon database is accessible');
+      console.error('3. Network allows outbound connections');
     } else {
-      console.log('✅ Successfully connected to database');
+      console.log('Successfully connected to database');
       release();
       createTables();
     }
   });
 
 } catch (error) {
-  console.error('❌ Database configuration error:', error.message);
+  console.error('Database configuration error:', error.message);
 }
 
 // Create tables if they don't exist
 const createTables = async () => {
   if (!pool) {
-    console.log('⚠️ No database connection, skipping table creation');
+    console.log('No database connection, skipping table creation');
     return;
   }
 
   try {
-    // Users table
+    // Users table with is_admin column
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -70,10 +74,11 @@ const createTables = async () => {
         email VARCHAR(255) UNIQUE NOT NULL,
         phone VARCHAR(20) UNIQUE NOT NULL,
         password VARCHAR(255) NOT NULL,
+        is_admin BOOLEAN DEFAULT FALSE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-    console.log('✅ Users table ready');
+    console.log('Users table ready');
 
     // Products table
     await pool.query(`
@@ -87,7 +92,7 @@ const createTables = async () => {
         category VARCHAR(50) NOT NULL,
         stock_status VARCHAR(50) DEFAULT 'available',
         rating DECIMAL(2,1) DEFAULT 0,
-        images TEXT[],
+        images TEXT[] DEFAULT '{}',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
@@ -126,19 +131,19 @@ const createTables = async () => {
     `);
     console.log('Notifications table ready');
 
-    // Notification settings table
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS notification_settings (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id) UNIQUE,
-        order_updates BOOLEAN DEFAULT TRUE,
-        promotions BOOLEAN DEFAULT TRUE,
-        newsletters BOOLEAN DEFAULT TRUE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    // Check if admin exists, if not create one
+    const adminCheck = await pool.query('SELECT * FROM users WHERE email = $1', ['admin@kukuyetu.com']);
+    if (adminCheck.rows.length === 0) {
+      const bcrypt = require('bcryptjs');
+      const hashedPassword = '$2a$10$qbZYkQqvwKs3iNzC1bwR9uC6vvWJBKx7sTRADJcC2bwMo/Js8/hd6';
+      
+      await pool.query(
+        `INSERT INTO users (full_name, email, phone, password, is_admin) 
+         VALUES ($1, $2, $3, $4, $5)`,
+        ['Administrator', 'admin@kukuyetu.com', '254112402377', hashedPassword, true]
       );
-    `);
-    console.log('Notification settings table ready');
+      console.log('Admin user created');
+    }
 
     console.log('All database tables created successfully!');
   } catch (error) {
