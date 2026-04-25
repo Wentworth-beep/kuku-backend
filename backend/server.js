@@ -10,63 +10,30 @@ require('dotenv').config();
 const app = express();
 const server = http.createServer(app);
 
-// ============ CORS CONFIGURATION ============
-const allowedOrigins = [
-    'https://kukuyetu.vercel.app',
-    'https://rps-fronthead.vercel.app',
-    'http://localhost:3000',
-    'http://localhost:3001'
-];
-
+// CORS
 app.use(cors({
-    origin: function(origin, callback) {
-        if (!origin) return callback(null, true);
-        if (allowedOrigins.indexOf(origin) !== -1 || (origin && origin.includes('vercel.app'))) {
-            callback(null, true);
-        } else {
-            callback(null, true);
-        }
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    origin: ['https://kukuyetu.vercel.app', 'https://rps-fronthead.vercel.app', 'http://localhost:3000'],
+    credentials: true
 }));
-
-app.options('*', cors());
 app.use(express.json());
 
-const JWT_SECRET = process.env.JWT_SECRET || 'kirinyaga_secret_key_2025';
-
-// ============ SOCKET.IO CONFIGURATION ============
 const io = socketIo(server, {
     cors: {
-        origin: allowedOrigins,
-        methods: ["GET", "POST"],
+        origin: ['https://kukuyetu.vercel.app', 'https://rps-fronthead.vercel.app', 'http://localhost:3000'],
         credentials: true
-    },
-    transports: ['polling', 'websocket'],
-    allowEIO3: true
-});
-
-// ============ NEON POSTGRESQL CONNECTION ============
-const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
-    connectionTimeoutMillis: 10000
-});
-
-pool.connect((err, client, release) => {
-    if (err) {
-        console.error('❌ Database connection error:', err.message);
-    } else {
-        console.log('✅ Connected to Neon PostgreSQL database');
-        release();
-        initDatabase();
     }
 });
 
-// ============ INITIALIZE DATABASE TABLES ============
-async function initDatabase() {
+const JWT_SECRET = 'kirinyaga_secret_key_2025';
+
+// Database connection
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+});
+
+// Create tables
+async function initDB() {
     try {
         await pool.query(`
             CREATE TABLE IF NOT EXISTS users (
@@ -83,123 +50,33 @@ async function initDatabase() {
                 rank VARCHAR(50) DEFAULT 'Bronze',
                 coins INTEGER DEFAULT 500,
                 avatar VARCHAR(50) DEFAULT 'ninja',
-                theme VARCHAR(50) DEFAULT 'cyberpunk',
                 win_streak INTEGER DEFAULT 0,
                 is_banned BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_login TIMESTAMP
+                created_at TIMESTAMP DEFAULT NOW()
             )
         `);
         console.log('✅ Users table ready');
-
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS matches (
-                id SERIAL PRIMARY KEY,
-                player_id INTEGER REFERENCES users(id),
-                opponent VARCHAR(50),
-                result VARCHAR(10),
-                mmr_change INTEGER,
-                coins_earned INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
-        console.log('✅ Matches table ready');
-
-        const adminCheck = await pool.query('SELECT * FROM users WHERE username = $1', ['admin']);
-        if (adminCheck.rows.length === 0) {
-            const adminPasswordHash = await bcrypt.hash('Peaceking', 10);
-            await pool.query(
-                `INSERT INTO users (username, email, password_hash, role, badge, level, total_wins, mmr, rank, coins, avatar)
-                 VALUES ($1, $2, $3, 'admin', 'Legend', 50, 5000, 3500, 'Grandmaster', 10000, 'dragon')`,
-                ['admin', 'santasantol087@gmail.com', adminPasswordHash]
-            );
-            console.log('✅ Admin user created');
-        }
-
-        console.log('========================================');
-        console.log('✅ DATABASE INITIALIZATION COMPLETE');
-        console.log('========================================\n');
-
-    } catch (error) {
-        console.error('Database initialization error:', error.message);
+    } catch (err) {
+        console.log('DB error:', err.message);
     }
 }
+initDB();
 
-// ============ HEALTH CHECK ============
-app.get('/', (req, res) => {
-    res.json({ 
-        status: 'online', 
-        message: 'RPS Cyber Arena API is running',
-        timestamp: new Date().toISOString()
-    });
-});
+// Helper functions
+function findUserByUsername(username) {
+    return pool.query('SELECT * FROM users WHERE username = $1', [username]);
+}
 
-// ============ VERIFY TOKEN ============
-app.get('/api/verify-token', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    
-    if (!token) {
-        return res.status(401).json({ valid: false, error: 'No token provided' });
-    }
-    
-    try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        const result = await pool.query('SELECT id, username, role, is_banned FROM users WHERE id = $1', [decoded.id]);
-        
-        if (result.rows.length === 0) {
-            return res.status(401).json({ valid: false, error: 'User not found' });
-        }
-        
-        const user = result.rows[0];
-        
-        if (user.is_banned) {
-            return res.status(401).json({ valid: false, error: 'Account banned' });
-        }
-        
-        res.json({ 
-            valid: true, 
-            user: {
-                id: user.id,
-                username: user.username,
-                role: user.role
-            }
-        });
-    } catch (error) {
-        res.status(401).json({ valid: false, error: 'Invalid or expired token' });
-    }
-});
+function findUserById(id) {
+    return pool.query('SELECT * FROM users WHERE id = $1', [id]);
+}
 
-// ============ USER STATUS ============
-app.get('/api/user/status', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) {
-        return res.status(401).json({ error: 'Token required' });
-    }
-    
-    try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        const result = await pool.query('SELECT is_banned FROM users WHERE id = $1', [decoded.id]);
-        
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-        
-        res.json({ 
-            is_banned: result.rows[0].is_banned,
-            username: decoded.username
-        });
-    } catch (error) {
-        res.status(401).json({ error: 'Invalid token' });
-    }
-});
-
-// ============ REGISTER ROUTE ============
+// ============ REGISTER ============
 app.post('/api/register', async (req, res) => {
     const { username, email, password } = req.body;
-    console.log('📝 Register attempt:', { username, email });
     
     if (!username || !email || !password) {
-        return res.status(400).json({ error: 'All fields are required' });
+        return res.status(400).json({ error: 'All fields required' });
     }
     if (password.length < 4) {
         return res.status(400).json({ error: 'Password must be at least 4 characters' });
@@ -208,44 +85,25 @@ app.post('/api/register', async (req, res) => {
     try {
         const existing = await pool.query('SELECT id FROM users WHERE username = $1 OR email = $2', [username, email]);
         if (existing.rows.length > 0) {
-            return res.status(400).json({ error: 'Username or email already exists' });
+            return res.status(400).json({ error: 'Username or email exists' });
         }
         
-        const passwordHash = await bcrypt.hash(password, 10);
+        const hash = await bcrypt.hash(password, 10);
         const result = await pool.query(
-            `INSERT INTO users (username, email, password_hash, role, badge, level, coins, avatar)
-             VALUES ($1, $2, $3, 'user', 'Bronze', 1, 500, 'ninja')
-             RETURNING id, username, role, badge, level, coins, avatar`,
-            [username, email, passwordHash]
+            `INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3) RETURNING id, username, role, badge, level, coins, avatar`,
+            [username, email, hash]
         );
         
-        const token = jwt.sign(
-            { id: result.rows[0].id, username: result.rows[0].username, role: result.rows[0].role },
-            JWT_SECRET,
-            { expiresIn: '7d' }
-        );
-        
-        console.log(`✅ User registered: ${username}`);
-        res.json({ 
-            success: true, 
-            token, 
-            user: result.rows[0],
-            message: 'Registration successful!'
-        });
-    } catch (error) {
-        console.error('Registration error:', error);
-        res.status(500).json({ error: 'Registration failed: ' + error.message });
+        const token = jwt.sign({ id: result.rows[0].id, username }, JWT_SECRET, { expiresIn: '7d' });
+        res.json({ success: true, token, user: result.rows[0] });
+    } catch (err) {
+        res.status(500).json({ error: 'Registration failed' });
     }
 });
 
-// ============ LOGIN ROUTE ============
+// ============ LOGIN ============
 app.post('/api/login', async (req, res) => {
     const { username, password } = req.body;
-    console.log('🔐 Login attempt:', username);
-    
-    if (!username || !password) {
-        return res.status(400).json({ error: 'Username and password required' });
-    }
     
     try {
         const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
@@ -255,7 +113,7 @@ app.post('/api/login', async (req, res) => {
         
         const user = result.rows[0];
         if (user.is_banned) {
-            return res.status(403).json({ error: 'Account has been banned' });
+            return res.status(403).json({ error: 'Account banned' });
         }
         
         const valid = await bcrypt.compare(password, user.password_hash);
@@ -263,15 +121,7 @@ app.post('/api/login', async (req, res) => {
             return res.status(401).json({ error: 'Invalid credentials' });
         }
         
-        await pool.query('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1', [user.id]);
-        
-        const token = jwt.sign(
-            { id: user.id, username: user.username, role: user.role },
-            JWT_SECRET,
-            { expiresIn: '7d' }
-        );
-        
-        console.log(`✅ User logged in: ${username}`);
+        const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
         res.json({
             success: true,
             token,
@@ -289,120 +139,61 @@ app.post('/api/login', async (req, res) => {
                 win_streak: user.win_streak
             }
         });
-    } catch (error) {
-        console.error('Login error:', error);
+    } catch (err) {
         res.status(500).json({ error: 'Login failed' });
+    }
+});
+
+// ============ VERIFY TOKEN ============
+app.get('/api/verify-token', async (req, res) => {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+        return res.status(401).json({ valid: false });
+    }
+    
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        const result = await pool.query('SELECT id, username, role, is_banned FROM users WHERE id = $1', [decoded.id]);
+        
+        if (result.rows.length === 0 || result.rows[0].is_banned) {
+            return res.status(401).json({ valid: false });
+        }
+        
+        res.json({ valid: true, user: result.rows[0] });
+    } catch (err) {
+        res.status(401).json({ valid: false });
     }
 });
 
 // ============ USER STATS ============
 app.get('/api/user/stats', async (req, res) => {
     const token = req.headers.authorization?.split(' ')[1];
-    if (!token) {
-        return res.status(401).json({ error: 'Token required' });
-    }
+    if (!token) return res.status(401).json({ error: 'Unauthorized' });
     
     try {
         const decoded = jwt.verify(token, JWT_SECRET);
         const result = await pool.query(
-            `SELECT username, badge, level, total_wins, total_games, mmr, rank, coins, avatar, win_streak
-             FROM users WHERE id = $1`,
+            `SELECT username, badge, level, total_wins, total_games, mmr, rank, coins, avatar, win_streak FROM users WHERE id = $1`,
             [decoded.id]
         );
-        
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-        
         res.json(result.rows[0]);
-    } catch (error) {
-        console.error('Stats error:', error);
+    } catch (err) {
         res.status(401).json({ error: 'Invalid token' });
     }
 });
 
-// ============ LEADERBOARD ============
-app.get('/api/leaderboard', async (req, res) => {
-    try {
-        const result = await pool.query(
-            `SELECT id, username, total_wins as wins, mmr, badge, avatar, level, coins
-             FROM users WHERE role = 'user' 
-             ORDER BY mmr DESC LIMIT 20`
-        );
-        res.json(result.rows.map((u, i) => ({ ...u, rank: i + 1 })));
-    } catch (error) {
-        console.error('Leaderboard error:', error);
-        res.json([]);
-    }
-});
-
-// ============ MATCH HISTORY ============
-app.get('/api/match-history', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) {
-        return res.status(401).json({ error: 'Token required' });
-    }
-    
-    try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        const result = await pool.query(
-            `SELECT * FROM matches 
-             WHERE player_id = $1 
-             ORDER BY created_at DESC LIMIT 20`,
-            [decoded.id]
-        );
-        
-        const history = result.rows.map(m => ({
-            result: m.result,
-            opponent: m.opponent || 'Computer',
-            mmr_change: m.mmr_change,
-            coins_earned: m.coins_earned,
-            timestamp: m.created_at
-        }));
-        
-        res.json(history);
-    } catch (error) {
-        console.error('Match history error:', error);
-        res.json([]);
-    }
-});
-
-// ============ UPDATE AVATAR ============
-app.post('/api/update-avatar', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) {
-        return res.status(401).json({ error: 'Token required' });
-    }
-    
-    try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        const { avatar } = req.body;
-        await pool.query('UPDATE users SET avatar = $1 WHERE id = $2', [avatar, decoded.id]);
-        res.json({ success: true });
-    } catch (error) {
-        res.status(401).json({ error: 'Invalid token' });
-    }
-});
-
-// ============ PLAY VS COMPUTER - FIXED ============
+// ============ PLAY VS COMPUTER ============
 app.post('/api/game/computer', async (req, res) => {
     const token = req.headers.authorization?.split(' ')[1];
-    
-    if (!token) {
-        return res.status(401).json({ error: 'Token required' });
-    }
+    if (!token) return res.status(401).json({ error: 'Unauthorized' });
     
     try {
         const decoded = jwt.verify(token, JWT_SECRET);
         const { playerMove, difficulty } = req.body;
         
-        if (!playerMove || !difficulty) {
-            return res.status(400).json({ error: 'Player move and difficulty required' });
-        }
-        
-        // Computer AI
-        let computerMove;
+        // Computer move
         const moves = ['rock', 'paper', 'scissors'];
+        let computerMove;
         
         if (difficulty === 'easy') {
             computerMove = moves[Math.floor(Math.random() * 3)];
@@ -423,92 +214,100 @@ app.post('/api/game/computer', async (req, res) => {
         }
         
         // Determine winner
-        let result = 'tie';
-        let won = false;
+        let result;
         let coinsEarned = 10;
         
         if (playerMove === computerMove) {
             result = 'tie';
-        } else if ((playerMove === 'rock' && computerMove === 'scissors') ||
-                   (playerMove === 'paper' && computerMove === 'rock') ||
-                   (playerMove === 'scissors' && computerMove === 'paper')) {
+        } else if (
+            (playerMove === 'rock' && computerMove === 'scissors') ||
+            (playerMove === 'paper' && computerMove === 'rock') ||
+            (playerMove === 'scissors' && computerMove === 'paper')
+        ) {
             result = 'win';
-            won = true;
             coinsEarned = 50;
         } else {
             result = 'lose';
         }
         
-        // Get user data
-        const userResult = await pool.query('SELECT total_wins, win_streak, coins, mmr FROM users WHERE id = $1', [decoded.id]);
-        
-        if (userResult.rows.length === 0) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-        
-        const user = userResult.rows[0];
-        let newWinStreak = user.win_streak;
-        
         // Update user stats
-        if (won) {
-            if (user.win_streak >= 2) coinsEarned += 20;
-            if (user.win_streak >= 4) coinsEarned += 40;
-            newWinStreak = user.win_streak + 1;
-            
-            await pool.query(
-                `UPDATE users SET 
-                    total_wins = total_wins + 1, 
-                    total_games = total_games + 1, 
-                    coins = coins + $1,
-                    win_streak = $2,
-                    mmr = mmr + 25
-                 WHERE id = $3`,
-                [coinsEarned, newWinStreak, decoded.id]
-            );
-        } else if (result === 'lose') {
-            newWinStreak = 0;
-            await pool.query(
-                `UPDATE users SET 
-                    total_games = total_games + 1, 
-                    coins = coins + $1,
-                    win_streak = $2,
-                    mmr = GREATEST(mmr - 25, 0)
-                 WHERE id = $3`,
-                [10, 0, decoded.id]
-            );
-        } else {
-            await pool.query(
-                `UPDATE users SET total_games = total_games + 1, coins = coins + $1 WHERE id = $2`,
-                [10, decoded.id]
-            );
-        }
+        const userResult = await pool.query('SELECT coins, win_streak, total_wins FROM users WHERE id = $1', [decoded.id]);
+        const user = userResult.rows[0];
         
-        // Save match record
+        let newWinStreak = result === 'win' ? user.win_streak + 1 : 0;
+        let newTotalWins = result === 'win' ? user.total_wins + 1 : user.total_wins;
+        
         await pool.query(
-            `INSERT INTO matches (player_id, opponent, result, mmr_change, coins_earned)
-             VALUES ($1, $2, $3, $4, $5)`,
-            [decoded.id, 'Computer', result, won ? 25 : -25, coinsEarned]
+            `UPDATE users SET 
+                total_wins = $1,
+                total_games = total_games + 1,
+                coins = coins + $2,
+                win_streak = $3
+             WHERE id = $4`,
+            [newTotalWins, coinsEarned, newWinStreak, decoded.id]
         );
         
-        // Get updated user data
         const updatedUser = await pool.query('SELECT coins FROM users WHERE id = $1', [decoded.id]);
         
         res.json({
-            success: true,
-            result,
-            computerMove,
-            playerMove,
+            result: result,
+            computerMove: computerMove,
+            playerMove: playerMove,
             coins_earned: coinsEarned,
             total_coins: updatedUser.rows[0].coins,
             win_streak: newWinStreak
         });
-    } catch (error) {
-        console.error('Game error:', error);
-        res.status(500).json({ error: 'Game failed: ' + error.message });
+    } catch (err) {
+        console.error('Game error:', err);
+        res.status(500).json({ error: 'Game failed' });
     }
 });
 
-// ============ ADMIN ROUTES ============
+// ============ LEADERBOARD ============
+app.get('/api/leaderboard', async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT id, username, total_wins as wins, mmr, badge, avatar, level FROM users WHERE role = 'user' ORDER BY mmr DESC LIMIT 20`
+        );
+        res.json(result.rows.map((u, i) => ({ ...u, rank: i + 1 })));
+    } catch (err) {
+        res.json([]);
+    }
+});
+
+// ============ MATCH HISTORY ============
+app.get('/api/match-history', async (req, res) => {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) return res.status(401).json({ error: 'Unauthorized' });
+    
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        const result = await pool.query(
+            `SELECT * FROM matches WHERE player_id = $1 ORDER BY created_at DESC LIMIT 20`,
+            [decoded.id]
+        );
+        res.json(result.rows);
+    } catch (err) {
+        res.json([]);
+    }
+});
+
+// ============ UPDATE AVATAR ============
+app.post('/api/update-avatar', async (req, res) => {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) return res.status(401).json({ error: 'Unauthorized' });
+    
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        const { avatar } = req.body;
+        await pool.query('UPDATE users SET avatar = $1 WHERE id = $2', [avatar, decoded.id]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(401).json({ error: 'Invalid token' });
+    }
+});
+
+// ============ ADMIN LOGIN ============
 app.post('/api/admin/login', async (req, res) => {
     const { username, password } = req.body;
     
@@ -524,21 +323,17 @@ app.post('/api/admin/login', async (req, res) => {
             return res.status(401).json({ error: 'Invalid admin credentials' });
         }
         
-        const token = jwt.sign(
-            { id: admin.id, username: admin.username, role: admin.role },
-            JWT_SECRET,
-            { expiresIn: '7d' }
-        );
-        
-        res.json({ success: true, token, admin: { id: admin.id, username: admin.username, role: admin.role } });
-    } catch (error) {
-        res.status(500).json({ error: 'Admin login failed' });
+        const token = jwt.sign({ id: admin.id, username: admin.username, role: admin.role }, JWT_SECRET, { expiresIn: '7d' });
+        res.json({ success: true, token, admin: { id: admin.id, username: admin.username } });
+    } catch (err) {
+        res.status(500).json({ error: 'Login failed' });
     }
 });
 
+// ============ ADMIN USERS ============
 app.get('/api/admin/users', async (req, res) => {
     const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ error: 'Token required' });
+    if (!token) return res.status(401).json({ error: 'Unauthorized' });
     
     try {
         const decoded = jwt.verify(token, JWT_SECRET);
@@ -546,41 +341,23 @@ app.get('/api/admin/users', async (req, res) => {
         
         const result = await pool.query('SELECT id, username, email, role, badge, level, total_wins, mmr, is_banned, avatar, coins FROM users');
         res.json(result.rows);
-    } catch (error) {
+    } catch (err) {
         res.status(401).json({ error: 'Invalid token' });
     }
 });
 
+// ============ ADMIN BAN ============
 app.post('/api/admin/ban-user', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ error: 'Token required' });
-    
-    try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        if (decoded.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
-        
-        const { userId, ban } = req.body;
-        await pool.query('UPDATE users SET is_banned = $1 WHERE id = $2 AND role != $3', [ban, userId, 'admin']);
-        res.json({ success: true });
-    } catch (error) {
-        res.status(401).json({ error: 'Invalid token' });
-    }
+    const { userId, ban } = req.body;
+    await pool.query('UPDATE users SET is_banned = $1 WHERE id = $2', [ban, userId]);
+    res.json({ success: true });
 });
 
+// ============ ADMIN UPDATE BADGE ============
 app.post('/api/admin/update-badge', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ error: 'Token required' });
-    
-    try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        if (decoded.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
-        
-        const { userId, badge } = req.body;
-        await pool.query('UPDATE users SET badge = $1 WHERE id = $2', [badge, userId]);
-        res.json({ success: true });
-    } catch (error) {
-        res.status(401).json({ error: 'Invalid token' });
-    }
+    const { userId, badge } = req.body;
+    await pool.query('UPDATE users SET badge = $1 WHERE id = $2', [badge, userId]);
+    res.json({ success: true });
 });
 
 app.get('/api/admin/online-count', (req, res) => {
@@ -588,16 +365,15 @@ app.get('/api/admin/online-count', (req, res) => {
 });
 
 app.get('/api/admin/total-users', async (req, res) => {
-    const result = await pool.query("SELECT COUNT(*) as count FROM users WHERE role = 'user'");
+    const result = await pool.query("SELECT COUNT(*) FROM users WHERE role = 'user'");
     res.json({ count: parseInt(result.rows[0].count) });
 });
 
-// ============ SOCKET.IO EVENTS ============
+// ============ SOCKET.IO ============
 const onlineUsers = new Map();
-const activeSessions = {};
 
 io.on('connection', (socket) => {
-    console.log('🔌 Client connected:', socket.id);
+    console.log('Client connected:', socket.id);
     
     socket.on('user-online', (data) => {
         onlineUsers.set(socket.id, data);
@@ -606,39 +382,24 @@ io.on('connection', (socket) => {
     
     socket.on('create-match', (data) => {
         const matchCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-        activeSessions[matchCode] = {
-            code: matchCode,
-            creator: data.username,
-            creatorId: data.userId,
-            players: [data.username],
-            status: 'waiting'
-        };
         socket.join(matchCode);
         socket.emit('match-created', { matchCode });
     });
     
     socket.on('join-match', (data) => {
-        const session = activeSessions[data.matchCode];
-        if (session && session.status === 'waiting') {
-            session.players.push(data.username);
-            session.status = 'active';
-            socket.join(data.matchCode);
-            io.to(data.matchCode).emit('match-started', { matchCode: data.matchCode });
-        } else {
-            socket.emit('join-error', { error: 'Match not found' });
-        }
+        const { matchCode } = data;
+        socket.join(matchCode);
+        io.to(matchCode).emit('match-started', { matchCode });
     });
     
     socket.on('make-move', (data) => {
-        const session = activeSessions[data.matchCode];
-        if (session) {
-            io.to(data.matchCode).emit('game-result', {
-                hostMove: data.move,
-                opponentMove: data.move === 'rock' ? 'scissors' : (data.move === 'paper' ? 'rock' : 'paper'),
-                winner: data.userId
-            });
-            delete activeSessions[data.matchCode];
-        }
+        const { matchCode, move } = data;
+        const opponentMove = move === 'rock' ? 'scissors' : (move === 'paper' ? 'rock' : 'paper');
+        io.to(matchCode).emit('game-result', {
+            hostMove: move,
+            opponentMove: opponentMove,
+            winner: data.userId
+        });
     });
     
     socket.on('send-sticker', (data) => {
@@ -651,18 +412,9 @@ io.on('connection', (socket) => {
     });
 });
 
-// ============ START SERVER ============
+// Start server
 const PORT = process.env.PORT || 3000;
-
-server.listen(PORT, '0.0.0.0', () => {
-    console.log('\n========================================');
-    console.log('🎮 RPS CYBER ARENA - NEON POSTGRESQL');
-    console.log('========================================');
-    console.log(`✅ Server running on port ${PORT}`);
-    console.log(`🌐 Backend URL: https://rps-backend-6iq6.onrender.com`);
-    console.log('========================================');
-    console.log('📋 LOGIN CREDENTIALS:');
-    console.log('   👑 Admin: admin / Peaceking');
-    console.log('   🎮 Test: CyberWarrior / player123');
-    console.log('========================================\n');
+server.listen(PORT, () => {
+    console.log(`\n✅ Server running on port ${PORT}`);
+    console.log(`🌐 https://rps-backend-6iq6.onrender.com\n`);
 });
